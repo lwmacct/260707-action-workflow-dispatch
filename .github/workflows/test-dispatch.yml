@@ -49,7 +49,6 @@ jobs:
           WORKFLOW: ${{ steps.dispatch.outputs.workflow }}
           WORKFLOW_REF: ${{ steps.dispatch.outputs.target-ref }}
           REPOSITORY: ${{ steps.dispatch.outputs.target-repository }}
-          SOURCE_REPOSITORY: ${{ steps.dispatch.outputs.source-repository }}
           TAG: ${{ steps.dispatch.outputs.source-tag }}
           SHA: ${{ steps.dispatch.outputs.source-sha }}
           EXPECTED_REPOSITORY: ${{ github.repository }}
@@ -60,6 +59,5 @@ jobs:
           test "${WORKFLOW}" = "test-target.yml"
           test "${WORKFLOW_REF}" = "${EXPECTED_REF}"
           test "${REPOSITORY}" = "${EXPECTED_REPOSITORY}"
-          test "${SOURCE_REPOSITORY}" = "${EXPECTED_REPOSITORY}"
           test "${TAG}" = "v0.0.0-test"
           test "${SHA}" = "${EXPECTED_SHA}"

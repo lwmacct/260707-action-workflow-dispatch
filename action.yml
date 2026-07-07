@@ -1,5 +1,5 @@
 name: "Dispatch Workflow"
-description: "Dispatch a workflow_dispatch workflow, including cross-repository release context"
+description: "Dispatch a workflow_dispatch workflow with source tag and SHA inputs"
 author: "lwmacct"
 inputs:
   workflow:
@@ -9,14 +9,11 @@ inputs:
     description: "Repository that owns the target workflow, in owner/repo format. Defaults to the current repository."
     required: false
   target-ref:
-    description: "Ref used to run the target workflow. Defaults to the current repository default branch, then main."
+    description: "Ref used to run the target workflow. Defaults to the target repository default branch, then main."
     required: false
   token:
     description: "GitHub token with Actions write permission on the target repository."
     default: ${{ github.token }}
-    required: false
-  source-repository:
-    description: "Repository that owns the source tag, in owner/repo format. Defaults to the current repository."
     required: false
   source-tag:
     description: "Source release tag. Defaults to the current tag ref when running from a tag push."
@@ -24,19 +21,12 @@ inputs:
   source-sha:
     description: "Optional source commit SHA. Defaults to GITHUB_SHA only for tag push events."
     required: false
-  source-base-ref:
-    description: "Optional source base ref forwarded to the target workflow."
-    required: false
   require-tag:
     description: "Set to true to fail when no source tag can be resolved."
     default: "true"
     required: false
   tag-pattern:
     description: "Optional glob pattern that source-tag must match, for example v*."
-    required: false
-  forward:
-    description: "Fields forwarded to the target workflow. minimal sends source-tag/source-sha. standard also sends source-repository/source-base-ref."
-    default: "minimal"
     required: false
   inputs:
     description: "Extra target workflow inputs, one key=value pair per line."
@@ -74,14 +64,10 @@ outputs:
     description: "Resolved target repository."
   target-ref:
     description: "Resolved target ref."
-  source-repository:
-    description: "Resolved source repository."
   source-tag:
     description: "Resolved source tag."
   source-sha:
     description: "Resolved source SHA, when available."
-  source-base-ref:
-    description: "Resolved source base ref, when available."
   dispatch-id:
     description: "Generated dispatch ID."
   run-id:

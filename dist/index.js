@@ -1,6 +1,6 @@
 import { s as setFailed, g as getInput, i as info, a as setOutput, b as summary, d as debug } from './chunks/actions-shared.js';
-import * as fs from 'node:fs';
 import * as crypto from 'node:crypto';
+import * as fs from 'node:fs';
 import * as require$$2 from 'node:http';
 import * as https from 'node:https';
 import 'path';
@@ -59,21 +59,16 @@ async function run() {
 function getInputs() {
     const workflow = getInput("workflow", { required: true });
     const targetRepository = getInput("target-repository") || getRequiredEnv("GITHUB_REPOSITORY");
-    const sourceRepository = getInput("source-repository") || getRequiredEnv("GITHUB_REPOSITORY");
     assertRepository(targetRepository, "target-repository");
-    assertRepository(sourceRepository, "source-repository");
     return {
         workflow,
         targetRepository,
-        targetRef: getInput("target-ref") || defaultBranchFromEvent() || "main",
+        targetRef: getInput("target-ref"),
         token: getInput("token"),
-        sourceRepository,
         sourceTag: getInput("source-tag"),
         sourceSha: getInput("source-sha").trim(),
-        sourceBaseRef: getInput("source-base-ref"),
         requireTag: getBooleanInput("require-tag"),
         tagPattern: getInput("tag-pattern"),
-        forward: getForwardInput(),
         extraInputs: getInput("inputs", { trimWhitespace: false }),
         wait: getBooleanInput("wait"),
         waitTimeoutSeconds: getIntegerInput("wait-timeout-seconds"),
@@ -88,8 +83,7 @@ async function resolveDispatch(inputs) {
     const contextTag = tagFromGithubContext();
     const sourceTag = inputs.sourceTag || contextTag;
     const sourceSha = inputs.sourceSha || (inputs.sourceTag ? "" : shaFromGithubContext(contextTag));
-    const targetRef = inputs.targetRef || (await defaultRepositoryBranch(inputs.targetRepository, inputs.token, "main"));
-    const sourceBaseRef = inputs.sourceBaseRef || (await defaultRepositoryBranch(inputs.sourceRepository, inputs.token, ""));
+    const targetRef = inputs.targetRef || (await defaultTargetBranch(inputs.targetRepository, inputs.token));
     const dispatchId = crypto.randomUUID();
     if (inputs.requireTag && !sourceTag) {
         throw new Error("source-tag is required. Provide source-tag or run from a tag push event.");
@@ -103,10 +97,6 @@ async function resolveDispatch(inputs) {
     const fields = parseExtraInputs(inputs.extraInputs);
     setFieldIfValue(fields, "source-tag", sourceTag);
     setFieldIfValue(fields, "source-sha", sourceSha);
-    if (inputs.forward === "standard") {
-        setFieldIfValue(fields, "source-repository", inputs.sourceRepository);
-        setFieldIfValue(fields, "source-base-ref", sourceBaseRef);
-    }
     if (inputs.dispatchIdInput) {
         setField(fields, inputs.dispatchIdInput, dispatchId);
     }
@@ -114,16 +104,14 @@ async function resolveDispatch(inputs) {
         workflow: inputs.workflow,
         targetRepository: inputs.targetRepository,
         targetRef,
-        sourceRepository: inputs.sourceRepository,
         sourceTag,
         sourceSha,
-        sourceBaseRef,
         dispatchId,
         fields,
         dispatchedAt: new Date(),
     };
 }
-async function defaultRepositoryBranch(repository, token, fallback) {
+async function defaultTargetBranch(repository, token) {
     const eventDefaultBranch = defaultBranchFromEvent();
     if (repository === process.env.GITHUB_REPOSITORY && eventDefaultBranch) {
         return eventDefaultBranch;
@@ -140,7 +128,7 @@ async function defaultRepositoryBranch(repository, token, fallback) {
     catch (error) {
         debug(`Failed to resolve default branch for ${repository}: ${error instanceof Error ? error.message : String(error)}`);
     }
-    return fallback;
+    return "main";
 }
 async function createWorkflowDispatch(inputs, resolved) {
     info(`Dispatching ${resolved.workflow} on ${resolved.targetRepository}@${resolved.targetRef}`);
@@ -215,11 +203,7 @@ function requestText(url, options) {
     return new Promise((resolve, reject) => {
         const parsedUrl = new URL(url);
         const client = parsedUrl.protocol === "http:" ? require$$2 : https;
-        const request = client.request(parsedUrl, {
-            method: options.method,
-            headers: options.headers,
-            agent: false,
-        }, (response) => {
+        const request = client.request(parsedUrl, { method: options.method, headers: options.headers, agent: false }, (response) => {
             response.setEncoding("utf8");
             let responseBody = "";
             response.on("data", (chunk) => {
@@ -252,9 +236,7 @@ function parseExtraInputs(value) {
         if (separatorIndex === -1) {
             throw new Error(`extra input line must use key=value format: ${line}`);
         }
-        const name = line.slice(0, separatorIndex).trim();
-        const fieldValue = line.slice(separatorIndex + 1);
-        setField(fields, name, fieldValue);
+        setField(fields, line.slice(0, separatorIndex).trim(), line.slice(separatorIndex + 1));
     }
     return fields;
 }
@@ -275,10 +257,8 @@ function setOutputs(resolved) {
     setOutput("workflow", resolved.workflow);
     setOutput("target-repository", resolved.targetRepository);
     setOutput("target-ref", resolved.targetRef);
-    setOutput("source-repository", resolved.sourceRepository);
     setOutput("source-tag", resolved.sourceTag);
     setOutput("source-sha", resolved.sourceSha);
-    setOutput("source-base-ref", resolved.sourceBaseRef);
     setOutput("dispatch-id", resolved.dispatchId);
     setOutput("run-id", resolved.targetRun?.id.toString() ?? "");
     setOutput("run-url", resolved.targetRun?.html_url ?? "");
@@ -294,10 +274,8 @@ async function writeSummary(resolved) {
         ["Target repository", code(resolved.targetRepository)],
         ["Target workflow", code(resolved.workflow)],
         ["Target ref", code(resolved.targetRef)],
-        ["Source repository", code(resolved.sourceRepository)],
         ["Source tag", code(resolved.sourceTag || "(none)")],
         ["Source SHA", code(resolved.sourceSha || "(none)")],
-        ["Source base ref", code(resolved.sourceBaseRef || "(none)")],
         ["Target run", resolved.targetRun ? link(resolved.targetRun.html_url) : code("(not waited)")],
         ["Conclusion", code(resolved.targetRun?.conclusion ?? "(not waited)")],
     ]);
@@ -341,13 +319,6 @@ function getBooleanInput(name) {
     }
     throw new Error(`${name} must be true or false`);
 }
-function getForwardInput() {
-    const value = getInput("forward") || "minimal";
-    if (value === "minimal" || value === "standard") {
-        return value;
-    }
-    throw new Error("forward must be minimal or standard");
-}
 function getIntegerInput(name) {
     const value = getInput(name);
     if (!value) {
@@ -381,15 +352,7 @@ function matchesGlob(value, pattern) {
 function globToRegExp(pattern) {
     let source = "^";
     for (const character of pattern) {
-        if (character === "*") {
-            source += ".*";
-        }
-        else if (character === "?") {
-            source += ".";
-        }
-        else {
-            source += escapeRegExp(character);
-        }
+        source += character === "*" ? ".*" : character === "?" ? "." : escapeRegExp(character);
     }
     source += "$";
     return new RegExp(source);
