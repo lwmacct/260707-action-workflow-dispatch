@@ -1,0 +1,43 @@
+name: Test Dispatch Target
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Test tag forwarded by action-workflow-dispatch.
+        required: true
+        type: string
+      sha:
+        description: Test SHA forwarded by action-workflow-dispatch.
+        required: true
+        type: string
+      source-run-id:
+        description: Source workflow run ID.
+        required: true
+        type: string
+      source-ref:
+        description: Source workflow ref name.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify dispatched inputs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Verify inputs
+        env:
+          TAG: ${{ inputs.tag }}
+          SHA: ${{ inputs.sha }}
+          SOURCE_RUN_ID: ${{ inputs.source-run-id }}
+          SOURCE_REF: ${{ inputs.source-ref }}
+        run: |
+          set -euo pipefail
+          test "${TAG}" = "v0.0.0-test"
+          test -n "${SHA}"
+          test -n "${SOURCE_RUN_ID}"
+          test -n "${SOURCE_REF}"

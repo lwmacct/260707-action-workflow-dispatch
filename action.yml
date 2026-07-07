@@ -1,0 +1,62 @@
+name: "Dispatch Workflow"
+description: "Dispatch a GitHub Actions workflow on a chosen ref with normalized tag and SHA inputs"
+author: "lwmacct"
+inputs:
+  workflow:
+    description: "Workflow file name, ID, or workflow name accepted by gh workflow run."
+    required: true
+  ref:
+    description: "Git ref used to run the target workflow. Defaults to the repository default branch, then main."
+    required: false
+  repository:
+    description: "Target repository in owner/repo format. Defaults to the current repository."
+    required: false
+  github-token:
+    description: "GitHub token used by gh workflow run."
+    default: ${{ github.token }}
+    required: false
+  tag:
+    description: "Release tag to forward. When empty, tag push events use the current ref name."
+    required: false
+  sha:
+    description: "Commit SHA to forward. When empty on tag push events, uses the event SHA."
+    required: false
+  require-tag:
+    description: "Set to true to fail when no tag can be resolved."
+    default: "true"
+    required: false
+  tag-pattern:
+    description: "Optional glob pattern that the resolved tag must match, for example v*."
+    required: false
+  tag-input:
+    description: "Target workflow input name used for the resolved tag. Set empty to disable forwarding tag."
+    default: "tag"
+    required: false
+  sha-input:
+    description: "Target workflow input name used for the resolved SHA. Set empty to disable forwarding SHA."
+    default: "sha"
+    required: false
+  inputs:
+    description: "Extra target workflow inputs, one key=value pair per line."
+    required: false
+  summary:
+    description: "Set to true to write a GitHub step summary."
+    default: "true"
+    required: false
+outputs:
+  workflow:
+    description: "Target workflow passed to gh workflow run."
+  ref:
+    description: "Resolved target workflow ref."
+  repository:
+    description: "Resolved target repository."
+  tag:
+    description: "Resolved tag, when available."
+  sha:
+    description: "Resolved SHA, when available."
+branding:
+  icon: "send"
+  color: "blue"
+runs:
+  using: "node24"
+  main: "dist/index.js"

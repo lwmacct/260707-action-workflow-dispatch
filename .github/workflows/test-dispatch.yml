@@ -1,0 +1,63 @@
+name: Test Workflow Dispatch
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/test-dispatch.yml"
+      - ".github/workflows/test-target.yml"
+      - "action.yml"
+      - "dist/**"
+  pull_request:
+    paths:
+      - ".github/workflows/test-dispatch.yml"
+      - ".github/workflows/test-target.yml"
+      - "action.yml"
+      - "dist/**"
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    name: Dispatch target workflow
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Dispatch test target
+        id: dispatch
+        uses: ./
+        with:
+          workflow: test-target.yml
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+          tag: v0.0.0-test
+          sha: ${{ github.sha }}
+          tag-pattern: "v*"
+          inputs: |
+            source-run-id=${{ github.run_id }}
+            source-ref=${{ github.ref_name }}
+
+      - name: Verify action outputs
+        env:
+          WORKFLOW: ${{ steps.dispatch.outputs.workflow }}
+          WORKFLOW_REF: ${{ steps.dispatch.outputs.ref }}
+          REPOSITORY: ${{ steps.dispatch.outputs.repository }}
+          TAG: ${{ steps.dispatch.outputs.tag }}
+          SHA: ${{ steps.dispatch.outputs.sha }}
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+          EXPECTED_REF: ${{ github.event.repository.default_branch || 'main' }}
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "${WORKFLOW}" = "test-target.yml"
+          test "${WORKFLOW_REF}" = "${EXPECTED_REF}"
+          test "${REPOSITORY}" = "${EXPECTED_REPOSITORY}"
+          test "${TAG}" = "v0.0.0-test"
+          test "${SHA}" = "${EXPECTED_SHA}"
