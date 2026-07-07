@@ -34,6 +34,10 @@ inputs:
   tag-pattern:
     description: "Optional glob pattern that source-tag must match, for example v*."
     required: false
+  forward:
+    description: "Fields forwarded to the target workflow. minimal sends source-tag/source-sha. standard also sends source-repository/source-base-ref."
+    default: "minimal"
+    required: false
   inputs:
     description: "Extra target workflow inputs, one key=value pair per line."
     required: false

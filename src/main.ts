@@ -1,6 +1,8 @@
 import * as core from "@actions/core";
 import * as fs from "node:fs";
 import * as crypto from "node:crypto";
+import * as http from "node:http";
+import * as https from "node:https";
 
 interface Inputs {
   workflow: string;
@@ -13,6 +15,7 @@ interface Inputs {
   sourceBaseRef: string;
   requireTag: boolean;
   tagPattern: string;
+  forward: "minimal" | "standard";
   extraInputs: string;
   wait: boolean;
   waitTimeoutSeconds: number;
@@ -103,6 +106,7 @@ function getInputs(): Inputs {
     sourceBaseRef: core.getInput("source-base-ref"),
     requireTag: getBooleanInput("require-tag"),
     tagPattern: core.getInput("tag-pattern"),
+    forward: getForwardInput(),
     extraInputs: core.getInput("inputs", { trimWhitespace: false }),
     wait: getBooleanInput("wait"),
     waitTimeoutSeconds: getIntegerInput("wait-timeout-seconds"),
@@ -136,10 +140,12 @@ async function resolveDispatch(inputs: Inputs): Promise<ResolvedDispatch> {
   }
 
   const fields = parseExtraInputs(inputs.extraInputs);
-  setFieldIfValue(fields, "source-repository", inputs.sourceRepository);
   setFieldIfValue(fields, "source-tag", sourceTag);
   setFieldIfValue(fields, "source-sha", sourceSha);
-  setFieldIfValue(fields, "source-base-ref", sourceBaseRef);
+  if (inputs.forward === "standard") {
+    setFieldIfValue(fields, "source-repository", inputs.sourceRepository);
+    setFieldIfValue(fields, "source-base-ref", sourceBaseRef);
+  }
   if (inputs.dispatchIdInput) {
     setField(fields, inputs.dispatchIdInput, dispatchId);
   }
@@ -243,31 +249,67 @@ async function githubJson<T>(
     throw new Error("token is required");
   }
 
-  const requestInit: RequestInit = {
+  const body = options.body === undefined ? "" : JSON.stringify(options.body);
+  const response = await requestText(`${githubApiBaseUrl()}${pathname}`, {
     method: options.method,
     headers: {
       accept: "application/vnd.github+json",
       authorization: `Bearer ${token}`,
+      connection: "close",
       "content-type": "application/json",
+      "content-length": Buffer.byteLength(body).toString(),
       "x-github-api-version": "2022-11-28",
     },
-  };
-  if (options.body !== undefined) {
-    requestInit.body = JSON.stringify(options.body);
+    body,
+  });
+
+  if (!options.expectStatus.includes(response.statusCode)) {
+    throw new Error(`GitHub API request failed: ${response.statusCode} ${response.statusMessage}${response.body ? `\n${response.body}` : ""}`);
   }
 
-  const response = await fetch(`${githubApiBaseUrl()}${pathname}`, requestInit);
-
-  if (!options.expectStatus.includes(response.status)) {
-    const body = await response.text();
-    throw new Error(`GitHub API request failed: ${response.status} ${response.statusText}${body ? `\n${body}` : ""}`);
-  }
-
-  if (response.status === 204) {
+  if (response.statusCode === 204) {
     return undefined as T;
   }
 
-  return (await response.json()) as T;
+  return JSON.parse(response.body) as T;
+}
+
+function requestText(
+  url: string,
+  options: { method: string; headers: Record<string, string>; body: string },
+): Promise<{ statusCode: number; statusMessage: string; body: string }> {
+  return new Promise((resolve, reject) => {
+    const parsedUrl = new URL(url);
+    const client = parsedUrl.protocol === "http:" ? http : https;
+    const request = client.request(
+      parsedUrl,
+      {
+        method: options.method,
+        headers: options.headers,
+        agent: false,
+      },
+      (response) => {
+        response.setEncoding("utf8");
+        let responseBody = "";
+        response.on("data", (chunk) => {
+          responseBody += chunk;
+        });
+        response.on("end", () => {
+          response.socket.destroy();
+          resolve({
+            statusCode: response.statusCode ?? 0,
+            statusMessage: response.statusMessage ?? "",
+            body: responseBody,
+          });
+        });
+      },
+    );
+    request.on("error", reject);
+    if (options.body) {
+      request.write(options.body);
+    }
+    request.end();
+  });
 }
 
 function parseExtraInputs(value: string): Record<string, string> {
@@ -381,6 +423,14 @@ function getBooleanInput(name: string): boolean {
     return false;
   }
   throw new Error(`${name} must be true or false`);
+}
+
+function getForwardInput(): "minimal" | "standard" {
+  const value = core.getInput("forward") || "minimal";
+  if (value === "minimal" || value === "standard") {
+    return value;
+  }
+  throw new Error("forward must be minimal or standard");
 }
 
 function getIntegerInput(name: string): number {

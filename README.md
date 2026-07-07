@@ -1,6 +1,6 @@
 # Dispatch Workflow
 
-触发一个 `workflow_dispatch` workflow，并把发布源信息用标准 inputs 转发过去。默认适合同仓库 tag 发布，也支持跨仓库调度。
+触发一个 `workflow_dispatch` workflow，并把发布对象最小信息转发过去。默认适合同仓库 tag 发布，也支持跨仓库调度。
 
 ## 最小用法
 
@@ -20,6 +20,13 @@ Action 会自动推断：
 - `source-tag`: 当前 tag ref
 - `source-sha`: tag push 事件的 `GITHUB_SHA`
 
+默认只向目标 workflow 转发：
+
+```text
+source-tag
+source-sha
+```
+
 ## 跨仓库调度
 
 ```yaml
@@ -28,6 +35,7 @@ Action 会自动推断：
     workflow: publish.yml
     target-repository: lwmacct/deploy-workflows
     target-ref: main
+    forward: standard
     token: ${{ secrets.DEPLOY_WORKFLOW_TOKEN }}
 ```
 
@@ -35,7 +43,21 @@ Action 会自动推断：
 
 ## 目标 workflow inputs
 
-目标 workflow 应声明这些标准 inputs：
+默认最小目标 workflow 只需要声明：
+
+```yaml
+on:
+  workflow_dispatch:
+    inputs:
+      source-tag:
+        required: true
+        type: string
+      source-sha:
+        required: false
+        type: string
+```
+
+跨仓库发布需要 source 仓库信息时，设置 `forward: standard`，目标 workflow 再声明：
 
 ```yaml
 on:
@@ -93,6 +115,7 @@ on:
 | `source-base-ref` | 否 | 当前默认分支 | 转发给目标 workflow 的 source base ref |
 | `require-tag` | 否 | `true` | 没有 source tag 时是否失败 |
 | `tag-pattern` | 否 |  | source tag glob，例如 `v*` |
+| `forward` | 否 | `minimal` | `minimal` 转发 `source-tag/source-sha`；`standard` 额外转发 `source-repository/source-base-ref` |
 | `inputs` | 否 |  | 额外目标 workflow inputs，一行一个 `key=value` |
 | `wait` | 否 | `false` | 是否等待目标 workflow 完成 |
 | `wait-timeout-seconds` | 否 | `1800` | 等待超时 |
