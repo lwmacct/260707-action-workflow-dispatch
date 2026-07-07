@@ -1,6 +1,6 @@
 {
   "name": "@lwmacct/260707-action-workflow-dispatch",
-  "version": "0.7.260707",
+  "version": "0.8.260707",
   "description": "Dispatch a workflow_dispatch workflow with normalized cross-repository release context",
   "main": "dist/index.js",
   "exports": "./dist/index.js",
@@ -8,6 +8,7 @@
   "packageManager": "pnpm@11.10.0",
   "scripts": {
     "build": "rm -rf dist/* && rollup -c && printf '{\"type\":\"module\"}\\n' > dist/package.json",
+    "smoke-test": "node scripts/smoke-test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "engines": {
