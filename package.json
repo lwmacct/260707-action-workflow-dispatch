@@ -1,6 +1,6 @@
 {
   "name": "@lwmacct/260707-action-workflow-dispatch",
-  "version": "0.4.260707",
+  "version": "0.5.260707",
   "description": "Dispatch a workflow_dispatch workflow with normalized cross-repository release context",
   "main": "dist/index.js",
   "exports": "./dist/index.js",

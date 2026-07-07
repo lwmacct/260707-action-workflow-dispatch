@@ -258,6 +258,7 @@ async function githubJson<T>(
       connection: "close",
       "content-type": "application/json",
       "content-length": Buffer.byteLength(body).toString(),
+      "user-agent": "lwmacct/260707-action-workflow-dispatch",
       "x-github-api-version": "2022-11-28",
     },
     body,
