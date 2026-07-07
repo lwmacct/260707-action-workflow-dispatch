@@ -1,43 +1,63 @@
 name: "Dispatch Workflow"
-description: "Dispatch a GitHub Actions workflow on a chosen ref with normalized tag and SHA inputs"
+description: "Dispatch a workflow_dispatch workflow, including cross-repository release context"
 author: "lwmacct"
 inputs:
   workflow:
-    description: "Workflow file name, ID, or workflow name accepted by gh workflow run."
+    description: "Target workflow file name or ID."
     required: true
-  ref:
-    description: "Git ref used to run the target workflow. Defaults to the repository default branch, then main."
+  target-repository:
+    description: "Repository that owns the target workflow, in owner/repo format. Defaults to the current repository."
     required: false
-  repository:
-    description: "Target repository in owner/repo format. Defaults to the current repository."
+  target-ref:
+    description: "Ref used to run the target workflow. Defaults to the current repository default branch, then main."
     required: false
-  github-token:
-    description: "GitHub token used by gh workflow run."
+  token:
+    description: "GitHub token with Actions write permission on the target repository."
     default: ${{ github.token }}
     required: false
-  tag:
-    description: "Release tag to forward. When empty, tag push events use the current ref name."
+  source-repository:
+    description: "Repository that owns the source tag, in owner/repo format. Defaults to the current repository."
     required: false
-  sha:
-    description: "Commit SHA to forward. When empty on tag push events, uses the event SHA."
+  source-tag:
+    description: "Source release tag. Defaults to the current tag ref when running from a tag push."
+    required: false
+  source-sha:
+    description: "Optional source commit SHA. Defaults to GITHUB_SHA only for tag push events."
+    required: false
+  source-base-ref:
+    description: "Optional source base ref forwarded to the target workflow."
     required: false
   require-tag:
-    description: "Set to true to fail when no tag can be resolved."
+    description: "Set to true to fail when no source tag can be resolved."
     default: "true"
     required: false
   tag-pattern:
-    description: "Optional glob pattern that the resolved tag must match, for example v*."
-    required: false
-  tag-input:
-    description: "Target workflow input name used for the resolved tag. Set empty to disable forwarding tag."
-    default: "tag"
-    required: false
-  sha-input:
-    description: "Target workflow input name used for the resolved SHA. Set empty to disable forwarding SHA."
-    default: "sha"
+    description: "Optional glob pattern that source-tag must match, for example v*."
     required: false
   inputs:
     description: "Extra target workflow inputs, one key=value pair per line."
+    required: false
+  wait:
+    description: "Set to true to poll the target workflow run until completion."
+    default: "false"
+    required: false
+  wait-timeout-seconds:
+    description: "Maximum time to wait for the target workflow when wait is true."
+    default: "1800"
+    required: false
+  wait-interval-seconds:
+    description: "Polling interval used when wait is true."
+    default: "10"
+    required: false
+  fail-on-target-failure:
+    description: "Set to true to fail this action when a waited target run does not conclude with success."
+    default: "true"
+    required: false
+  run-name-contains:
+    description: "Optional display title substring used to identify the target run while waiting."
+    required: false
+  dispatch-id-input:
+    description: "Optional target workflow input name that receives a generated dispatch ID."
     required: false
   summary:
     description: "Set to true to write a GitHub step summary."
@@ -45,15 +65,29 @@ inputs:
     required: false
 outputs:
   workflow:
-    description: "Target workflow passed to gh workflow run."
-  ref:
-    description: "Resolved target workflow ref."
-  repository:
+    description: "Target workflow."
+  target-repository:
     description: "Resolved target repository."
-  tag:
-    description: "Resolved tag, when available."
-  sha:
-    description: "Resolved SHA, when available."
+  target-ref:
+    description: "Resolved target ref."
+  source-repository:
+    description: "Resolved source repository."
+  source-tag:
+    description: "Resolved source tag."
+  source-sha:
+    description: "Resolved source SHA, when available."
+  source-base-ref:
+    description: "Resolved source base ref, when available."
+  dispatch-id:
+    description: "Generated dispatch ID."
+  run-id:
+    description: "Target run ID when wait finds a run."
+  run-url:
+    description: "Target run URL when wait finds a run."
+  status:
+    description: "Target run status when wait is enabled."
+  conclusion:
+    description: "Target run conclusion when wait is enabled."
 branding:
   icon: "send"
   color: "blue"

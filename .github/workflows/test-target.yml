@@ -3,13 +3,21 @@ name: Test Dispatch Target
 on:
   workflow_dispatch:
     inputs:
-      tag:
+      source-repository:
+        description: Source repository forwarded by action-workflow-dispatch.
+        required: true
+        type: string
+      source-tag:
         description: Test tag forwarded by action-workflow-dispatch.
         required: true
         type: string
-      sha:
+      source-sha:
         description: Test SHA forwarded by action-workflow-dispatch.
         required: true
+        type: string
+      source-base-ref:
+        description: Source base ref forwarded by action-workflow-dispatch.
+        required: false
         type: string
       source-run-id:
         description: Source workflow run ID.
@@ -31,13 +39,18 @@ jobs:
     steps:
       - name: Verify inputs
         env:
-          TAG: ${{ inputs.tag }}
-          SHA: ${{ inputs.sha }}
+          SOURCE_REPOSITORY: ${{ inputs.source-repository }}
+          TAG: ${{ inputs.source-tag }}
+          SHA: ${{ inputs.source-sha }}
+          SOURCE_BASE_REF: ${{ inputs.source-base-ref }}
           SOURCE_RUN_ID: ${{ inputs.source-run-id }}
           SOURCE_REF: ${{ inputs.source-ref }}
+          EXPECTED_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
+          test "${SOURCE_REPOSITORY}" = "${EXPECTED_REPOSITORY}"
           test "${TAG}" = "v0.0.0-test"
           test -n "${SHA}"
+          test -n "${SOURCE_BASE_REF}"
           test -n "${SOURCE_RUN_ID}"
           test -n "${SOURCE_REF}"

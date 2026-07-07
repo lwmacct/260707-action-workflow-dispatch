@@ -36,9 +36,9 @@ jobs:
         uses: ./
         with:
           workflow: test-target.yml
-          ref: ${{ github.event.repository.default_branch || 'main' }}
-          tag: v0.0.0-test
-          sha: ${{ github.sha }}
+          target-ref: ${{ github.event.repository.default_branch || 'main' }}
+          source-tag: v0.0.0-test
+          source-sha: ${{ github.sha }}
           tag-pattern: "v*"
           inputs: |
             source-run-id=${{ github.run_id }}
@@ -47,10 +47,11 @@ jobs:
       - name: Verify action outputs
         env:
           WORKFLOW: ${{ steps.dispatch.outputs.workflow }}
-          WORKFLOW_REF: ${{ steps.dispatch.outputs.ref }}
-          REPOSITORY: ${{ steps.dispatch.outputs.repository }}
-          TAG: ${{ steps.dispatch.outputs.tag }}
-          SHA: ${{ steps.dispatch.outputs.sha }}
+          WORKFLOW_REF: ${{ steps.dispatch.outputs.target-ref }}
+          REPOSITORY: ${{ steps.dispatch.outputs.target-repository }}
+          SOURCE_REPOSITORY: ${{ steps.dispatch.outputs.source-repository }}
+          TAG: ${{ steps.dispatch.outputs.source-tag }}
+          SHA: ${{ steps.dispatch.outputs.source-sha }}
           EXPECTED_REPOSITORY: ${{ github.repository }}
           EXPECTED_REF: ${{ github.event.repository.default_branch || 'main' }}
           EXPECTED_SHA: ${{ github.sha }}
@@ -59,5 +60,6 @@ jobs:
           test "${WORKFLOW}" = "test-target.yml"
           test "${WORKFLOW_REF}" = "${EXPECTED_REF}"
           test "${REPOSITORY}" = "${EXPECTED_REPOSITORY}"
+          test "${SOURCE_REPOSITORY}" = "${EXPECTED_REPOSITORY}"
           test "${TAG}" = "v0.0.0-test"
           test "${SHA}" = "${EXPECTED_SHA}"

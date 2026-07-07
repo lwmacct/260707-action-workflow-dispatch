@@ -1,7 +1,7 @@
 {
   "name": "@lwmacct/260707-action-workflow-dispatch",
-  "version": "0.2.260707",
-  "description": "Dispatch a GitHub Actions workflow on a chosen ref with normalized tag and SHA inputs",
+  "version": "0.3.260707",
+  "description": "Dispatch a workflow_dispatch workflow with normalized cross-repository release context",
   "main": "dist/index.js",
   "exports": "./dist/index.js",
   "type": "module",

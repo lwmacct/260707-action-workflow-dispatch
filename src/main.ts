@@ -1,32 +1,40 @@
 import * as core from "@actions/core";
-import { execFile } from "node:child_process";
 import * as fs from "node:fs";
-import { promisify } from "node:util";
-
-const execFileAsync = promisify(execFile);
+import * as crypto from "node:crypto";
 
 interface Inputs {
   workflow: string;
-  ref: string;
-  repository: string;
-  githubToken: string;
-  tag: string;
-  sha: string;
+  targetRepository: string;
+  targetRef: string;
+  token: string;
+  sourceRepository: string;
+  sourceTag: string;
+  sourceSha: string;
+  sourceBaseRef: string;
   requireTag: boolean;
   tagPattern: string;
-  tagInput: string;
-  shaInput: string;
   extraInputs: string;
+  wait: boolean;
+  waitTimeoutSeconds: number;
+  waitIntervalSeconds: number;
+  failOnTargetFailure: boolean;
+  runNameContains: string;
+  dispatchIdInput: string;
   summary: boolean;
 }
 
-interface ResolvedContext {
+interface ResolvedDispatch {
   workflow: string;
-  ref: string;
-  repository: string;
-  tag: string;
-  sha: string;
-  fields: Map<string, string>;
+  targetRepository: string;
+  targetRef: string;
+  sourceRepository: string;
+  sourceTag: string;
+  sourceSha: string;
+  sourceBaseRef: string;
+  dispatchId: string;
+  fields: Record<string, string>;
+  dispatchedAt: Date;
+  targetRun?: WorkflowRun;
 }
 
 interface GitHubEventPayload {
@@ -35,11 +43,38 @@ interface GitHubEventPayload {
   };
 }
 
+interface RepositoryResponse {
+  default_branch?: string;
+}
+
+interface WorkflowRun {
+  id: number;
+  html_url: string;
+  status: string;
+  conclusion: string | null;
+  display_title?: string;
+  head_branch?: string;
+  event?: string;
+  created_at?: string;
+}
+
+interface WorkflowRunsResponse {
+  workflow_runs?: WorkflowRun[];
+}
+
 async function run(): Promise<void> {
   try {
     const inputs = getInputs();
-    const resolved = resolveContext(inputs);
-    await dispatchWorkflow(inputs, resolved);
+    const resolved = await resolveDispatch(inputs);
+    await createWorkflowDispatch(inputs, resolved);
+
+    if (inputs.wait) {
+      resolved.targetRun = await waitForWorkflowRun(inputs, resolved);
+      if (inputs.failOnTargetFailure && resolved.targetRun.conclusion !== "success") {
+        throw new Error(`Target workflow concluded with ${resolved.targetRun.conclusion ?? "unknown"}`);
+      }
+    }
+
     setOutputs(resolved);
     if (inputs.summary) {
       await writeSummary(resolved);
@@ -51,131 +86,192 @@ async function run(): Promise<void> {
 
 function getInputs(): Inputs {
   const workflow = core.getInput("workflow", { required: true });
-  const repository = core.getInput("repository") || getRequiredEnv("GITHUB_REPOSITORY");
-  assertRepository(repository);
+  const targetRepository = core.getInput("target-repository") || getRequiredEnv("GITHUB_REPOSITORY");
+  const sourceRepository = core.getInput("source-repository") || getRequiredEnv("GITHUB_REPOSITORY");
+
+  assertRepository(targetRepository, "target-repository");
+  assertRepository(sourceRepository, "source-repository");
 
   return {
     workflow,
-    ref: core.getInput("ref"),
-    repository,
-    githubToken: core.getInput("github-token"),
-    tag: core.getInput("tag"),
-    sha: core.getInput("sha"),
+    targetRepository,
+    targetRef: core.getInput("target-ref") || defaultBranchFromEvent() || "main",
+    token: core.getInput("token"),
+    sourceRepository,
+    sourceTag: core.getInput("source-tag"),
+    sourceSha: core.getInput("source-sha").trim(),
+    sourceBaseRef: core.getInput("source-base-ref"),
     requireTag: getBooleanInput("require-tag"),
     tagPattern: core.getInput("tag-pattern"),
-    tagInput: core.getInput("tag-input"),
-    shaInput: core.getInput("sha-input"),
     extraInputs: core.getInput("inputs", { trimWhitespace: false }),
+    wait: getBooleanInput("wait"),
+    waitTimeoutSeconds: getIntegerInput("wait-timeout-seconds"),
+    waitIntervalSeconds: getIntegerInput("wait-interval-seconds"),
+    failOnTargetFailure: getBooleanInput("fail-on-target-failure"),
+    runNameContains: core.getInput("run-name-contains"),
+    dispatchIdInput: core.getInput("dispatch-id-input"),
     summary: getBooleanInput("summary"),
   };
 }
 
-function resolveContext(inputs: Inputs): ResolvedContext {
+async function resolveDispatch(inputs: Inputs): Promise<ResolvedDispatch> {
   const contextTag = tagFromGithubContext();
-  const tag = inputs.tag || contextTag;
-  const sha = inputs.sha || (inputs.tag ? "" : shaFromGithubContext(contextTag));
-  const ref = inputs.ref || defaultBranchFromEvent() || "main";
+  const sourceTag = inputs.sourceTag || contextTag;
+  const sourceSha = inputs.sourceSha || (inputs.sourceTag ? "" : shaFromGithubContext(contextTag));
+  const targetRef = inputs.targetRef || (await defaultRepositoryBranch(inputs.targetRepository, inputs.token, "main"));
+  const sourceBaseRef =
+    inputs.sourceBaseRef || (await defaultRepositoryBranch(inputs.sourceRepository, inputs.token, ""));
+  const dispatchId = crypto.randomUUID();
 
-  if (inputs.requireTag && !tag) {
-    throw new Error("tag is required. Provide the tag input or run from a tag push event.");
+  if (inputs.requireTag && !sourceTag) {
+    throw new Error("source-tag is required. Provide source-tag or run from a tag push event.");
   }
 
-  if (tag && inputs.tagPattern && !matchesGlob(tag, inputs.tagPattern)) {
-    throw new Error(`tag ${tag} does not match pattern ${inputs.tagPattern}`);
+  if (sourceTag && inputs.tagPattern && !matchesGlob(sourceTag, inputs.tagPattern)) {
+    throw new Error(`source-tag ${sourceTag} does not match pattern ${inputs.tagPattern}`);
+  }
+
+  if (sourceSha) {
+    assertSha(sourceSha, "source-sha");
   }
 
   const fields = parseExtraInputs(inputs.extraInputs);
-  if (inputs.tagInput && tag) {
-    setField(fields, inputs.tagInput, tag);
-  }
-  if (inputs.shaInput && (sha || tag)) {
-    setField(fields, inputs.shaInput, sha);
+  setFieldIfValue(fields, "source-repository", inputs.sourceRepository);
+  setFieldIfValue(fields, "source-tag", sourceTag);
+  setFieldIfValue(fields, "source-sha", sourceSha);
+  setFieldIfValue(fields, "source-base-ref", sourceBaseRef);
+  if (inputs.dispatchIdInput) {
+    setField(fields, inputs.dispatchIdInput, dispatchId);
   }
 
   return {
     workflow: inputs.workflow,
-    ref,
-    repository: inputs.repository,
-    tag,
-    sha,
+    targetRepository: inputs.targetRepository,
+    targetRef,
+    sourceRepository: inputs.sourceRepository,
+    sourceTag,
+    sourceSha,
+    sourceBaseRef,
+    dispatchId,
     fields,
+    dispatchedAt: new Date(),
   };
 }
 
-async function dispatchWorkflow(inputs: Inputs, resolved: ResolvedContext): Promise<void> {
-  const args = ["workflow", "run", resolved.workflow, "--repo", resolved.repository, "--ref", resolved.ref];
-  for (const [name, value] of resolved.fields) {
-    args.push("-f", `${name}=${value}`);
-  }
-
-  core.info(`Dispatching ${resolved.workflow} on ${resolved.repository}@${resolved.ref}`);
-  if (resolved.fields.size > 0) {
-    core.info(`Forwarding inputs: ${[...resolved.fields.keys()].join(", ")}`);
-  }
-
-  const env = { ...process.env };
-  if (inputs.githubToken) {
-    env.GH_TOKEN = inputs.githubToken;
+async function defaultRepositoryBranch(repository: string, token: string, fallback: string): Promise<string> {
+  const eventDefaultBranch = defaultBranchFromEvent();
+  if (repository === process.env.GITHUB_REPOSITORY && eventDefaultBranch) {
+    return eventDefaultBranch;
   }
 
   try {
-    const { stdout, stderr } = await execFileAsync("gh", args, {
-      env,
-      maxBuffer: 1024 * 1024,
+    const result = await githubJson<RepositoryResponse>(token, `/repos/${repository}`, {
+      method: "GET",
+      expectStatus: [200],
     });
-    if (stdout.trim()) {
-      core.info(stdout.trim());
-    }
-    if (stderr.trim()) {
-      core.info(stderr.trim());
+    if (result.default_branch) {
+      return result.default_branch;
     }
   } catch (error) {
-    if (isExecError(error)) {
-      const output = [error.stdout, error.stderr].filter(Boolean).join("\n").trim();
-      throw new Error(output || error.message);
+    core.debug(`Failed to resolve default branch for ${repository}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  return fallback;
+}
+
+async function createWorkflowDispatch(inputs: Inputs, resolved: ResolvedDispatch): Promise<void> {
+  core.info(`Dispatching ${resolved.workflow} on ${resolved.targetRepository}@${resolved.targetRef}`);
+  core.info(`Forwarding inputs: ${Object.keys(resolved.fields).join(", ") || "(none)"}`);
+
+  await githubJson<void>(inputs.token, `/repos/${resolved.targetRepository}/actions/workflows/${encodeURIComponent(resolved.workflow)}/dispatches`, {
+    method: "POST",
+    body: {
+      ref: resolved.targetRef,
+      inputs: resolved.fields,
+    },
+    expectStatus: [204],
+  });
+}
+
+async function waitForWorkflowRun(inputs: Inputs, resolved: ResolvedDispatch): Promise<WorkflowRun> {
+  const startedAt = Date.now();
+  const timeoutMs = inputs.waitTimeoutSeconds * 1000;
+  const intervalMs = inputs.waitIntervalSeconds * 1000;
+
+  for (;;) {
+    const run = await findWorkflowRun(inputs, resolved);
+    if (run) {
+      core.info(`Target workflow run: ${run.html_url}`);
+      if (run.status === "completed") {
+        return run;
+      }
     }
-    throw error;
+
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error(`Timed out waiting for target workflow after ${inputs.waitTimeoutSeconds}s`);
+    }
+
+    await sleep(intervalMs);
   }
 }
 
-function setOutputs(resolved: ResolvedContext): void {
-  core.setOutput("workflow", resolved.workflow);
-  core.setOutput("ref", resolved.ref);
-  core.setOutput("repository", resolved.repository);
-  core.setOutput("tag", resolved.tag);
-  core.setOutput("sha", resolved.sha);
+async function findWorkflowRun(inputs: Inputs, resolved: ResolvedDispatch): Promise<WorkflowRun | undefined> {
+  const query = new URLSearchParams({
+    event: "workflow_dispatch",
+    branch: resolved.targetRef,
+    per_page: "30",
+  });
+  const response = await githubJson<WorkflowRunsResponse>(
+    inputs.token,
+    `/repos/${resolved.targetRepository}/actions/workflows/${encodeURIComponent(resolved.workflow)}/runs?${query.toString()}`,
+    { method: "GET", expectStatus: [200] },
+  );
+
+  const minimumCreatedAt = resolved.dispatchedAt.getTime() - 30_000;
+  return (response.workflow_runs ?? [])
+    .filter((run) => !run.created_at || Date.parse(run.created_at) >= minimumCreatedAt)
+    .filter((run) => !inputs.runNameContains || (run.display_title ?? "").includes(inputs.runNameContains))
+    .sort((left, right) => Date.parse(right.created_at ?? "") - Date.parse(left.created_at ?? ""))[0];
 }
 
-async function writeSummary(resolved: ResolvedContext): Promise<void> {
-  core.summary
-    .addHeading("Workflow dispatched", 2)
-    .addTable([
-      [
-        { data: "Item", header: true },
-        { data: "Value", header: true },
-      ],
-      ["Repository", code(resolved.repository)],
-      ["Workflow", code(resolved.workflow)],
-      ["Workflow ref", code(resolved.ref)],
-      ["Tag", code(resolved.tag || "(none)")],
-      ["SHA", code(resolved.sha || "(none)")],
-    ]);
-
-  if (resolved.fields.size > 0) {
-    core.summary.addHeading("Forwarded inputs", 3).addTable([
-      [
-        { data: "Name", header: true },
-        { data: "Value", header: true },
-      ],
-      ...[...resolved.fields].map(([name, value]) => [code(name), code(value)]),
-    ]);
+async function githubJson<T>(
+  token: string,
+  pathname: string,
+  options: { method: string; body?: unknown; expectStatus: number[] },
+): Promise<T> {
+  if (!token) {
+    throw new Error("token is required");
   }
 
-  await core.summary.write();
+  const requestInit: RequestInit = {
+    method: options.method,
+    headers: {
+      accept: "application/vnd.github+json",
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+      "x-github-api-version": "2022-11-28",
+    },
+  };
+  if (options.body !== undefined) {
+    requestInit.body = JSON.stringify(options.body);
+  }
+
+  const response = await fetch(`${githubApiBaseUrl()}${pathname}`, requestInit);
+
+  if (!options.expectStatus.includes(response.status)) {
+    const body = await response.text();
+    throw new Error(`GitHub API request failed: ${response.status} ${response.statusText}${body ? `\n${body}` : ""}`);
+  }
+
+  if (response.status === 204) {
+    return undefined as T;
+  }
+
+  return (await response.json()) as T;
 }
 
-function parseExtraInputs(value: string): Map<string, string> {
-  const fields = new Map<string, string>();
+function parseExtraInputs(value: string): Record<string, string> {
+  const fields: Record<string, string> = {};
   for (const rawLine of value.split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line || line.startsWith("#")) {
@@ -194,13 +290,54 @@ function parseExtraInputs(value: string): Map<string, string> {
   return fields;
 }
 
-function setField(fields: Map<string, string>, name: string, value: string): void {
+function setFieldIfValue(fields: Record<string, string>, name: string, value: string): void {
+  if (value) {
+    setField(fields, name, value);
+  }
+}
+
+function setField(fields: Record<string, string>, name: string, value: string): void {
   assertInputName(name);
-  const current = fields.get(name);
+  const current = fields[name];
   if (current !== undefined && current !== value) {
     throw new Error(`workflow input ${name} is defined more than once with different values`);
   }
-  fields.set(name, value);
+  fields[name] = value;
+}
+
+function setOutputs(resolved: ResolvedDispatch): void {
+  core.setOutput("workflow", resolved.workflow);
+  core.setOutput("target-repository", resolved.targetRepository);
+  core.setOutput("target-ref", resolved.targetRef);
+  core.setOutput("source-repository", resolved.sourceRepository);
+  core.setOutput("source-tag", resolved.sourceTag);
+  core.setOutput("source-sha", resolved.sourceSha);
+  core.setOutput("source-base-ref", resolved.sourceBaseRef);
+  core.setOutput("dispatch-id", resolved.dispatchId);
+  core.setOutput("run-id", resolved.targetRun?.id.toString() ?? "");
+  core.setOutput("run-url", resolved.targetRun?.html_url ?? "");
+  core.setOutput("status", resolved.targetRun?.status ?? "");
+  core.setOutput("conclusion", resolved.targetRun?.conclusion ?? "");
+}
+
+async function writeSummary(resolved: ResolvedDispatch): Promise<void> {
+  core.summary.addHeading("Workflow dispatched", 2).addTable([
+    [
+      { data: "Item", header: true },
+      { data: "Value", header: true },
+    ],
+    ["Target repository", code(resolved.targetRepository)],
+    ["Target workflow", code(resolved.workflow)],
+    ["Target ref", code(resolved.targetRef)],
+    ["Source repository", code(resolved.sourceRepository)],
+    ["Source tag", code(resolved.sourceTag || "(none)")],
+    ["Source SHA", code(resolved.sourceSha || "(none)")],
+    ["Source base ref", code(resolved.sourceBaseRef || "(none)")],
+    ["Target run", resolved.targetRun ? link(resolved.targetRun.html_url) : code("(not waited)")],
+    ["Conclusion", code(resolved.targetRun?.conclusion ?? "(not waited)")],
+  ]);
+
+  await core.summary.write();
 }
 
 function tagFromGithubContext(): string {
@@ -213,10 +350,7 @@ function tagFromGithubContext(): string {
 }
 
 function shaFromGithubContext(tag: string): string {
-  if (!tag) {
-    return "";
-  }
-  return process.env.GITHUB_SHA ?? "";
+  return tag ? (process.env.GITHUB_SHA ?? "") : "";
 }
 
 function defaultBranchFromEvent(): string {
@@ -249,16 +383,34 @@ function getBooleanInput(name: string): boolean {
   throw new Error(`${name} must be true or false`);
 }
 
-function assertRepository(repository: string): void {
+function getIntegerInput(name: string): number {
+  const value = core.getInput(name);
+  if (!value) {
+    return 0;
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  return parsed;
+}
+
+function assertRepository(repository: string, name: string): void {
   const [owner, repo, extra] = repository.split("/");
   if (!owner || !repo || extra) {
-    throw new Error("repository must use owner/repo format");
+    throw new Error(`${name} must use owner/repo format`);
   }
 }
 
 function assertInputName(name: string): void {
   if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(name)) {
     throw new Error(`workflow input name is invalid: ${name}`);
+  }
+}
+
+function assertSha(value: string, name: string): void {
+  if (!/^[a-fA-F0-9]{40}$/.test(value)) {
+    throw new Error(`${name} must be a full 40-character hex commit SHA`);
   }
 }
 
@@ -285,6 +437,10 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function githubApiBaseUrl(): string {
+  return process.env.GITHUB_API_URL || "https://api.github.com";
+}
+
 function getRequiredEnv(name: string): string {
   const value = process.env[name];
   if (!value) {
@@ -293,12 +449,16 @@ function getRequiredEnv(name: string): string {
   return value;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function code(value: string): string {
   return `\`${value.replaceAll("`", "\\`")}\``;
 }
 
-function isExecError(error: unknown): error is Error & { stdout?: string; stderr?: string } {
-  return error instanceof Error;
+function link(url: string): string {
+  return `<a href="${url}">${url}</a>`;
 }
 
 await run();

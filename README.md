@@ -1,113 +1,120 @@
 # Dispatch Workflow
 
-在一个 workflow 中触发另一个 GitHub Actions workflow，并把当前 tag/sha 上下文标准化后转发过去。
+触发一个 `workflow_dispatch` workflow，并把发布源信息用标准 inputs 转发过去。默认适合同仓库 tag 发布，也支持跨仓库调度。
 
-这个 Action 主要用于这类发布模式：
+## 最小用法
 
-```text
-tag push or manual release workflow
-  -> dispatch publish workflow on main/default branch
-  -> publish workflow checkout and validates the release tag commit
-```
-
-这样可以让真正的发布 workflow 固定运行在主分支或默认分支上，避免不同 tag ref 之间的 cache 作用域隔离，同时保留发布端对 tag/sha 的二次校验。
-
-## 基本用法
+tag push 触发时，只需要指定目标 workflow：
 
 ```yaml
-name: release
+- uses: lwmacct/260707-action-workflow-dispatch@main
+  with:
+    workflow: publish.yml
+```
 
+Action 会自动推断：
+
+- `target-repository`: 当前仓库
+- `target-ref`: 当前仓库默认分支，取不到时为 `main`
+- `source-repository`: 当前仓库
+- `source-tag`: 当前 tag ref
+- `source-sha`: tag push 事件的 `GITHUB_SHA`
+
+## 跨仓库调度
+
+```yaml
+- uses: lwmacct/260707-action-workflow-dispatch@main
+  with:
+    workflow: publish.yml
+    target-repository: lwmacct/deploy-workflows
+    target-ref: main
+    token: ${{ secrets.DEPLOY_WORKFLOW_TOKEN }}
+```
+
+`token` 需要对目标仓库有 Actions write 权限。经典 PAT 通常需要 `repo` scope；fine-grained token 需要目标仓库的 Actions write 权限。
+
+## 目标 workflow inputs
+
+目标 workflow 应声明这些标准 inputs：
+
+```yaml
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
-      tag:
+      source-repository:
         required: true
         type: string
-      sha:
+      source-tag:
+        required: true
+        type: string
+      source-sha:
         required: false
         type: string
-
-permissions:
-  actions: write
-  contents: read
-
-jobs:
-  dispatch:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: lwmacct/260707-action-workflow-dispatch@main
-        with:
-          workflow: publish.yml
-          ref: main
-          tag: ${{ inputs.tag }}
-          sha: ${{ inputs.sha }}
-          tag-pattern: "v*"
+      source-base-ref:
+        required: false
+        type: string
 ```
 
-在 tag push 事件中，`tag` 和 `sha` 可以省略：
+额外 inputs 可以用 `inputs` 传递：
 
 ```yaml
 - uses: lwmacct/260707-action-workflow-dispatch@main
   with:
     workflow: publish.yml
-    ref: main
-    tag-pattern: "v*"
-```
-
-## 额外 inputs
-
-`inputs` 支持一行一个 `key=value`，会追加为目标 workflow 的 `workflow_dispatch` input。
-
-```yaml
-- uses: lwmacct/260707-action-workflow-dispatch@main
-  with:
-    workflow: publish.yml
-    ref: main
     inputs: |
       environment=production
       channel=stable
 ```
 
-默认会把解析出的 tag 和 sha 转发为目标 workflow 的 `tag` 和 `sha` inputs。可以通过 `tag-input` 和 `sha-input` 改名；设为空可以禁用对应字段。
+## 等待目标 run
+
+默认只负责发起 dispatch。需要让当前 workflow 等待目标 workflow 完成时：
+
+```yaml
+- uses: lwmacct/260707-action-workflow-dispatch@main
+  with:
+    workflow: publish.yml
+    wait: "true"
+```
+
+等待模式会轮询目标 workflow 的最新 `workflow_dispatch` run。并发很高时，建议让目标 workflow 的 `run-name` 包含一个稳定标识，并通过 `run-name-contains` 过滤。
 
 ## Inputs
 
 | 名称 | 必填 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `workflow` | 是 |  | 目标 workflow 文件名、ID 或 `gh workflow run` 可接受的名称 |
-| `ref` | 否 | 仓库默认分支，取不到时为 `main` | 目标 workflow 运行在哪个 ref 上 |
-| `repository` | 否 | 当前仓库 | 目标仓库，格式为 `owner/repo` |
-| `github-token` | 否 | `${{ github.token }}` | 调用 `gh workflow run` 使用的 token |
-| `tag` | 否 | tag push 事件的 ref name | 要转发的 tag |
-| `sha` | 否 | tag push 事件的 `GITHUB_SHA` | 要转发的 commit SHA |
-| `require-tag` | 否 | `true` | 没有解析到 tag 时是否失败 |
-| `tag-pattern` | 否 |  | 可选 tag glob，例如 `v*` |
-| `tag-input` | 否 | `tag` | 目标 workflow 接收 tag 的 input 名；空值表示不转发 |
-| `sha-input` | 否 | `sha` | 目标 workflow 接收 sha 的 input 名；空值表示不转发 |
+| `workflow` | 是 |  | 目标 workflow 文件名或 ID |
+| `target-repository` | 否 | 当前仓库 | 目标 workflow 所在仓库 |
+| `target-ref` | 否 | 默认分支，取不到时 `main` | 目标 workflow 运行 ref |
+| `token` | 否 | `${{ github.token }}` | 调用 GitHub Actions API 的 token |
+| `source-repository` | 否 | 当前仓库 | source tag 所在仓库 |
+| `source-tag` | 否 | 当前 tag ref | source release tag |
+| `source-sha` | 否 | tag push 的 `GITHUB_SHA` | 可选 source commit SHA |
+| `source-base-ref` | 否 | 当前默认分支 | 转发给目标 workflow 的 source base ref |
+| `require-tag` | 否 | `true` | 没有 source tag 时是否失败 |
+| `tag-pattern` | 否 |  | source tag glob，例如 `v*` |
 | `inputs` | 否 |  | 额外目标 workflow inputs，一行一个 `key=value` |
-| `summary` | 否 | `true` | 是否写入 GitHub Step Summary |
+| `wait` | 否 | `false` | 是否等待目标 workflow 完成 |
+| `wait-timeout-seconds` | 否 | `1800` | 等待超时 |
+| `wait-interval-seconds` | 否 | `10` | 轮询间隔 |
+| `fail-on-target-failure` | 否 | `true` | 目标 run 非 success 时是否失败 |
+| `run-name-contains` | 否 |  | 等待时用于筛选目标 run 的标题片段 |
+| `dispatch-id-input` | 否 |  | 可选目标 input 名，用于接收生成的 dispatch ID |
+| `summary` | 否 | `true` | 是否写入 Step Summary |
 
 ## Outputs
 
 | 名称 | 说明 |
 | --- | --- |
 | `workflow` | 目标 workflow |
-| `ref` | 解析后的目标 ref |
-| `repository` | 解析后的目标仓库 |
-| `tag` | 解析后的 tag |
-| `sha` | 解析后的 SHA |
-
-## 权限
-
-调用方 workflow 需要允许触发 workflow：
-
-```yaml
-permissions:
-  actions: write
-  contents: read
-```
-
-目标 workflow 必须支持 `workflow_dispatch`。
+| `target-repository` | 目标仓库 |
+| `target-ref` | 目标 ref |
+| `source-repository` | source 仓库 |
+| `source-tag` | source tag |
+| `source-sha` | source SHA |
+| `source-base-ref` | source base ref |
+| `dispatch-id` | 生成的 dispatch ID |
+| `run-id` | 等待模式下找到的目标 run ID |
+| `run-url` | 等待模式下找到的目标 run URL |
+| `status` | 等待模式下的目标 run 状态 |
+| `conclusion` | 等待模式下的目标 run 结论 |
